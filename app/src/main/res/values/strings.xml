@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VoiceFlow Mic</string>
+    <string name="service_desc">Shows a floating mic button when a text field is focused, so you can dictate into any app. Audio is processed by the device speech recognizer; nothing else is read or stored.</string>
+</resources>
