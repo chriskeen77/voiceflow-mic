@@ -280,20 +280,34 @@ class FloatingMicService : AccessibilityService() {
     private fun writeToField(final: Boolean) {
         val text = clean(accumulated)
         if (text.isBlank()) return
-        val combined = if (baseText.isBlank()) text else baseText.trimEnd() + " " + text
         var node = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         if (node == null || !node.isEditable) node = target
+
+        // add a leading space when inserting right after existing text
+        var toInsert = text
+        if (node != null && node.isShowingHintText != true) {
+            val existing = node.text?.toString() ?: ""
+            val sel = node.textSelectionEnd
+            if (sel > 0 && sel <= existing.length && !existing[sel - 1].isWhitespace()) toInsert = " $text"
+        }
+
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("VoiceFlow", toInsert))
+
         var ok = false
         if (node != null && node.isEditable) {
-            val args = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, combined)
+            // PASTE goes through the real input pipeline — apps like Google Keep
+            // ignore ACTION_SET_TEXT for their save/dirty state and discard the note
+            ok = try { node.performAction(AccessibilityNodeInfo.ACTION_PASTE) } catch (_: Exception) { false }
+            if (!ok) {
+                val combined = if (baseText.isBlank()) text else baseText.trimEnd() + " " + text
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, combined)
+                }
+                ok = try { node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) } catch (_: Exception) { false }
             }
-            ok = try { node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) } catch (_: Exception) { false }
         }
         if (final && !ok) {
-            // fallback: clipboard, so the dictation is never lost
-            val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("VoiceFlow", text))
             Toast.makeText(this, "Couldn't type here — text copied, long-press → Paste", Toast.LENGTH_LONG).show()
         }
     }
