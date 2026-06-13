@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.media.AudioManager
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -152,10 +153,31 @@ class FloatingMicService : AccessibilityService() {
         accumulated = ""
         listening = true
         setBubbleListening(true)
+        muteBeeps() // the recognizer dings on every listen cycle — silence it for the session
         recognizer = SpeechRecognizer.createSpeechRecognizer(this).also {
             it.setRecognitionListener(listener)
         }
         startListeningOnce()
+    }
+
+    /* the recognizer restarts its listen cycle continuously, chiming each time —
+       mute the beep streams while dictating, restore after */
+    private var mutedStreams = mutableListOf<Int>()
+    private fun muteBeeps() {
+        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+        for (stream in intArrayOf(AudioManager.STREAM_MUSIC, AudioManager.STREAM_SYSTEM, AudioManager.STREAM_NOTIFICATION)) {
+            try {
+                am.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0)
+                mutedStreams.add(stream)
+            } catch (_: Exception) {} // some streams need DND access on some phones — skip those
+        }
+    }
+    private fun unmuteBeeps() {
+        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+        for (stream in mutedStreams) {
+            try { am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0) } catch (_: Exception) {}
+        }
+        mutedStreams.clear()
     }
 
     private fun recIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -173,21 +195,24 @@ class FloatingMicService : AccessibilityService() {
         override fun onResults(results: Bundle) {
             val txt = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             if (!txt.isNullOrBlank()) {
+                // accumulate silently — nothing is typed until the user taps stop
                 accumulated = applyScratchThat(accumulated + " " + txt)
-                writeToField(false)
             }
-            // keep listening until the user taps stop
             if (listening) handler.postDelayed({ if (listening) startListeningOnce() }, 120)
+            else finishDictation() // stop was tapped; this was the final flush
         }
         override fun onPartialResults(partial: Bundle) {}
         override fun onError(error: Int) {
             if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                 Toast.makeText(applicationContext, "Open VoiceFlow Mic and grant the microphone", Toast.LENGTH_LONG).show()
-                stopDictation()
+                listening = false
+                setBubbleListening(false)
+                finishDictation()
                 return
             }
             // no-speech / busy / network: just restart while the user wants to listen
             if (listening) handler.postDelayed({ if (listening) startListeningOnce() }, 250)
+            else finishDictation()
         }
         override fun onReadyForSpeech(p: Bundle?) {}
         override fun onBeginningOfSpeech() {}
@@ -197,12 +222,30 @@ class FloatingMicService : AccessibilityService() {
         override fun onEvent(t: Int, p: Bundle?) {}
     }
 
+    private var finishRunnable: Runnable? = null
+
     private fun stopDictation() {
+        if (!listening) return
         listening = false
         setBubbleListening(false)
-        recognizer?.let { try { it.stopListening(); it.destroy() } catch (_: Exception) {} }
+        // let the recognizer finalize what was just said; onResults delivers it,
+        // with a timed fallback in case nothing more arrives
+        try { recognizer?.stopListening() } catch (_: Exception) {}
+        finishRunnable = Runnable { finishDictation() }
+        handler.postDelayed(finishRunnable!!, 1800)
+    }
+
+    /* runs exactly once per session: cleanup grammar, insert text, restore sounds */
+    private fun finishDictation() {
+        finishRunnable?.let { handler.removeCallbacks(it) }
+        finishRunnable = null
+        recognizer?.let { try { it.destroy() } catch (_: Exception) {} }
         recognizer = null
-        if (accumulated.isNotBlank()) writeToField(true)
+        unmuteBeeps()
+        if (accumulated.isNotBlank()) {
+            writeToField(true)
+            accumulated = ""
+        }
     }
 
     /* ---------------- text cleanup + insertion ---------------- */
@@ -256,7 +299,8 @@ class FloatingMicService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        stopDictation()
+        listening = false
+        finishDictation()
         hideBubble()
         super.onDestroy()
     }

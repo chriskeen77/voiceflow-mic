@@ -15,6 +15,21 @@ android {
         versionName = "1.0"
     }
 
+    // stable debug signing: CI commits app/debug.keystore once via the
+    // setup-keystore workflow, so every APK has the same signature and
+    // updates install over the existing app without uninstalling
+    signingConfigs {
+        getByName("debug") {
+            val ks = file("debug.keystore")
+            if (ks.exists()) {
+                storeFile = ks
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
